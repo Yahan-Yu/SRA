@@ -7,6 +7,7 @@ from torch.nn import functional as F
 from torch.nn.parameter import Parameter
 from transformers import AutoConfig
 from transformers import AutoModelWithLMHead
+import pdb
 
 from src.utils import *
 from src.dataloader import *
@@ -31,22 +32,27 @@ class BertTagger(nn.Module):
         self.classifier = CosineLinear(self.hidden_dim, self.output_dim)
 
 
-    def forward(self, X, return_feat=False):
-        features = self.forward_encoder(X)
+    def forward(self, X, noise, return_feat=False):
+        features = self.forward_encoder(X, noise)
         logits,_,_ = self.forward_classifier(features)
         if return_feat:
             return logits, features
         return logits
         
-    def forward_encoder(self, X):
+    def forward_encoder(self, X, noise):
         '''
         features
         features[0]: hidden_states; 
         features[1]: all_hidden_states(embedding layer + 12 layer output hidden, 13*(bsz, seq_len, hidden_dim)); 
         features[2]: all_self_attentions(12 layer attention map, 12*(bsz, att_heads=12, seq_len, seq_len))
         '''
-        features = self.encoder(X) 
-        features = features[1][-1] # 最后一层特征(bsz, seq_len, hidden_dim)    features[1] 包括所有层的特征 
+        # pdb.set_trace() # self.encoder.bert.embeddings -> self.encoder.bert.encoder 
+        Emb = self.encoder.bert.embeddings(X)
+        attack_Emb = Emb + noise
+        fea = self.encoder.bert.encoder(attack_Emb, output_attentions=True,output_hidden_states=True)
+
+        # features = self.encoder(X) 
+        features = fea[1][-1] # 最后一层特征(bsz, seq_len, hidden_dim)    features[1] 包括所有层的特征 
         return features
 
     def forward_classifier(self, features):
@@ -84,7 +90,7 @@ class CosineLinear(nn.Module):
             weight_list = [F.normalize(weight_item, p=2,dim=1) for weight_item in weight_list]
             for n_input, n_weight in zip(input_list, weight_list):
                 out.append(F.linear(n_input, n_weight))
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             out = sum(out)
         else:
             # (bs, seq_len, out_dim)

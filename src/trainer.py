@@ -16,6 +16,7 @@ from torch.nn.parameter import Parameter
 from sklearn.metrics import confusion_matrix
 from seqeval.metrics import f1_score # 序列标注评估工具
 from transformers import AutoTokenizer
+import pdb
 
 from src.dataloader import *
 from src.utils import *
@@ -40,12 +41,18 @@ class BaseTrainer(object):
         self.weight_decay = 5e-4
     
 
-    def batch_forward(self, inputs):    
+    def batch_forward(self, inputs, noise):    
         # Compute features
         self.inputs = inputs # # (bsz, seq_len)
-        self.all_features = self.model.encoder(self.inputs)
-        # Compute logits 常规logits
-        self.logits = self.model.forward_classifier(self.all_features[1][-1])   # (bsz, seq_len, output_dim) 
+        Emb = self.model.encoder.bert.embeddings(self.inputs)
+        attack_Emb = Emb + noise
+        fea = self.model.encoder.bert.encoder(attack_Emb, output_attentions=True,output_hidden_states=True)
+
+        self.all_features = fea
+        features = fea[1][-1]
+        # pdb.set_trace()
+        # Compute logits logits
+        self.logits = self.model.forward_classifier(features)   # (bsz, seq_len, output_dim) 
 
 
     def batch_loss(self, labels):
@@ -71,7 +78,8 @@ class BaseTrainer(object):
 
             with torch.no_grad():
                 self.refer_model.eval()
-                refer_features = self.refer_model.forward_encoder(X)
+                noise_ref = 0
+                refer_features = self.refer_model.forward_encoder(X, noise_ref)
                 refer_logits = self.refer_model.forward_classifier(refer_features)# (bsz,seq_len,refer_dims)
 
 
@@ -113,13 +121,13 @@ class BaseTrainer(object):
         return weight
 
 
-    def batch_loss_cpfd(self, labels):
+    def batch_loss_cpfd(self, labels, noise):
      
         original_labels = labels.clone()
         self.loss = 0
-        refer_dims = self.refer_model.classifier.output_dim # old model 输出维度
+        refer_dims = self.refer_model.classifier.output_dim
         all_dims = self.model.classifier.output_dim
-            
+
         # Check input
         assert self.logits!=None, "logits is none!"
         assert self.refer_model!=None, "refer_model is none!"
@@ -128,9 +136,14 @@ class BaseTrainer(object):
 
         with torch.no_grad():
             self.refer_model.eval()
-            refer_all_features= self.refer_model.encoder(self.inputs)
-            refer_features = refer_all_features[1][-1]
-            refer_logits = self.refer_model.forward_classifier(refer_features)# (bsz,seq_len,refer_dims)
+            noise_ref = 0
+            
+            Emb_ref = self.refer_model.encoder.bert.embeddings(self.inputs)
+            attack_Emb_ref = Emb_ref + noise_ref
+            fea = self.refer_model.encoder.bert.encoder(attack_Emb_ref, output_attentions=True,output_hidden_states=True)
+            refer_all_features=fea
+
+            refer_logits = self.refer_model.forward_classifier(refer_all_features[1][-1])# (bsz,seq_len,refer_dims)
             assert refer_logits.shape[:2] == self.logits.shape[:2], \
                     "the first 2 dims of refer_logits and logits are not equal!!!"
         
@@ -167,7 +180,6 @@ class BaseTrainer(object):
             if self.params.classif_adaptive_min_factor:
                 classif_adaptive_factor = classif_adaptive_factor.clamp(min=self.params.classif_adaptive_min_factor)
 
-   
         loss = nn.CrossEntropyLoss(reduction='none')(self.logits.permute(0,2,1), labels) # 0 新类 旧类伪标签 -100(计算的loss为0)    (bsz,seq_len)
         loss = classif_adaptive_factor * loss
 
@@ -272,7 +284,7 @@ class BaseTrainer(object):
         
         return self.loss.item()
 
-    def evaluate(self, dataloader, each_class=False, entity_order=[], is_plot_hist=False, is_plot_cm=False):
+    def evaluate(self, dataloader, old_model, noise_model, iteration, each_class=False, entity_order=[], is_plot_hist=False, is_plot_cm=False):
         with torch.no_grad():
             self.model.eval()
 
@@ -282,7 +294,16 @@ class BaseTrainer(object):
 
             for x, y in dataloader: 
                 x, y = x.cuda(), y.cuda()
-                self.batch_forward(x)
+                if iteration > 0:
+                    old_model.eval()
+                    noise_model.eval()
+                    # refer_features = old_model.forward_encoder(x)
+                    # pdb.set_trace()
+                    # T_noise = noise_model(refer_features[1][-1])
+                    T_noise = 0
+                else:
+                    T_noise = 0
+                self.batch_forward(x, T_noise)
                 _logits = self.logits.view(-1, self.logits.shape[-1]).detach().cpu()
                 logits_list.append(_logits)
                 x = x.view(x.size(0)*x.size(1)).detach().cpu() # bs*seq_len
@@ -379,6 +400,8 @@ class BaseTrainer(object):
             saved_path = os.path.join(path, str(save_model_name))
         else:
             saved_path = os.path.join(self.params.dump_path, str(save_model_name))
+
+        
         torch.save({
             "hidden_dim": self.model.hidden_dim,
             "output_dim": self.model.output_dim,

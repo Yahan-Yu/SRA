@@ -21,7 +21,18 @@ from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import confusion_matrix
 import math
+from torch.optim.lr_scheduler import _LRScheduler
 
+# class WTLR(_LRScheduler):
+#     def __init__(self, optimizer, alpha=0.001, t=1, last_epoch=-1, min_lr=1e-9):
+#         self.alpha = alpha
+#         self.min_lr = min_lr
+#         self.t = t
+#         super(WTLR, self).__init__(optimizer, last_epoch)
+    
+#     def get_lr(self):
+#         return [ max( base_lr * math.exp(-1 * self.alpha * self.t), self.min_lr)
+#                 for base_lr in self.base_lrs]
 
 def entropy(probabilities):
     """Computes the entropy per token.
